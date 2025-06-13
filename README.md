@@ -1,7 +1,7 @@
 # World_of_Quantum repo
 
 1. Clone the repo 
-git clone https://github.com/AlbertoPancaldi/World_of_Quantum.git
+    git clone https://github.com/AlbertoPancaldi/World_of_Quantum.git
 
 2. Create and activate a virtual environment
     python3 -m venv venv_WoQ
@@ -35,3 +35,6 @@ git clone https://github.com/AlbertoPancaldi/World_of_Quantum.git
 
 6. Pulling Remote Changes
     git pull origin main
+
+7. Sanity check
+    git status
