@@ -1,0 +1,13 @@
+# Ignore the virtual-environment folder
+venv_WoQ/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# (Optional) Logs, temp files
+*.log
+*.tmp
