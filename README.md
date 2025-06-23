@@ -4,8 +4,8 @@
     git clone https://github.com/AlbertoPancaldi/World_of_Quantum.git
 
 2. Create and activate a virtual environment
-    python3 -m venv venv_WoQ
-    source venv_WoQ/bin/activate
+    python3 -m venv myenv
+    source myenv/bin/activate
 
 3. Install dependencies
     pip install --upgrade pip
@@ -14,7 +14,7 @@
 4. Create the .gitignore file
     cat << EOF > .gitignore
     # Ignore the virtual-environment folder
-    venv_WoQ/
+    venv/
 
     # Python bytecode and cache
     __pycache__/
@@ -29,7 +29,7 @@
     EOF
 
 5. Stage your changes 
-   git add .
+   git add path/to/file(s).
    git commit -m "Briefly describe what you changed"
    git push origin main
 
@@ -38,3 +38,5 @@
 
 7. Sanity check
     git status
+
+
