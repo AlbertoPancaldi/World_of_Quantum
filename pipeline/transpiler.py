@@ -123,46 +123,41 @@ class TranspilerComparison:
         try:
             config = get_config()
             
-            # APPROACH 1: Use transpile() with initial_layout (RECOMMENDED)
-            # First, run our custom layout pass to get the layout
+            # Step 1: Run our custom layout pass to get the layout
+            from qiskit.transpiler import PassManager
             layout_pm = PassManager([layout_pass])
-            temp_circuit = layout_pm.run(circuit.copy())
             
-            # Extract the layout from our custom pass
-            if hasattr(temp_circuit, '_layout') and temp_circuit._layout:
-                # Get virtual-to-physical qubit mapping from our custom layout
-                layout_wrapper = temp_circuit._layout
+            # Run layout pass on a copy of the circuit
+            circuit_copy = circuit.copy()
+            layout_pm.run(circuit_copy)
+            
+            # Step 2: Extract the layout from the layout pass property_set
+            if hasattr(layout_pass, 'property_set') and 'layout' in layout_pass.property_set:
+                layout = layout_pass.property_set['layout']
                 
-                # Handle different layout object types
-                if hasattr(layout_wrapper, 'initial_layout'):
-                    # TranspileLayout object - extract the actual Layout
-                    actual_layout = layout_wrapper.initial_layout
-                    if hasattr(actual_layout, 'get_virtual_bits'):
-                        initial_layout = actual_layout.get_virtual_bits()
-                    else:
-                        # Convert Layout to dict format
-                        initial_layout = {v: k for k, v in actual_layout._p2v.items()}
-                elif hasattr(layout_wrapper, 'get_virtual_bits'):
-                    # Direct Layout object
-                    initial_layout = layout_wrapper.get_virtual_bits()
+                # Convert Layout object to initial_layout dict format
+                if hasattr(layout, 'get_virtual_bits'):
+                    # Standard Layout object - get mapping of virtual to physical qubits
+                    initial_layout = layout.get_virtual_bits()
                 else:
-                    # Fallback - try to convert directly
-                    initial_layout = dict(layout_wrapper)
+                    # Fallback - convert Layout to dict
+                    initial_layout = dict(layout)
                 
-                # Use standard Qiskit transpile with our custom initial layout
-                # This ensures all other stages (routing, optimization, scheduling) are handled properly
+                print(f"✅ Extracted custom layout: {len(initial_layout)} qubits mapped")
+                
+                # Step 3: Use standard Qiskit transpile with our custom initial layout
+                # This ensures all other stages (routing, optimization, scheduling) work properly
                 transpiled = transpile(
                     circuit,
                     backend=self.backend,
-                    optimization_level=self.optimization_level,  # Match stock optimization level
+                    optimization_level=self.optimization_level,
                     initial_layout=initial_layout,
                     seed_transpiler=config.get_seed()
                 )
                 
             else:
-                # Fallback: if layout pass doesn't set _layout properly, 
-                # try to extract layout differently or use standard transpile
-                print("⚠️  Custom layout pass didn't set _layout, using standard transpile")
+                print("⚠️  Could not extract layout from custom pass, falling back to standard transpile")
+                # Fallback to standard transpilation
                 transpiled = transpile(
                     circuit,
                     backend=self.backend,
@@ -182,10 +177,13 @@ class TranspilerComparison:
             }
             
         except Exception as e:
+            compile_time = time.time() - start_time
+            print(f"❌ Custom transpilation failed: {str(e)}")
+            
             return {
                 'transpiled_circuit': None,
                 'success': False,
-                'compile_time': time.time() - start_time,
+                'compile_time': compile_time,
                 'stats': {},
                 'layout': None,
                 'error_message': str(e)

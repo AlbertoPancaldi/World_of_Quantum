@@ -114,8 +114,14 @@ class GreedyCommunityLayout(TransformationPass):
         )
         
         # Step 6: Set layout property (convert to Qubit objects)
-        layout_dict_qubits = {dag.qubits[logical]: physical 
-                             for logical, physical in layout_dict.items()}
+        layout_dict_qubits = {}
+        for logical_idx, physical_idx in layout_dict.items():
+            if logical_idx < len(dag.qubits):
+                qubit_obj = dag.qubits[logical_idx]
+                layout_dict_qubits[qubit_obj] = physical_idx
+            else:
+                print(f"⚠️  Warning: logical qubit {logical_idx} not found in DAG qubits")
+        
         layout = Layout(layout_dict_qubits)
         self.property_set['layout'] = layout
         
@@ -164,42 +170,74 @@ class GreedyCommunityLayout(TransformationPass):
                               num_qubits: int) -> Dict[int, int]:
         """Create optimal layout by assigning communities to Heavy-Hex cells."""
         
-        # Get distance matrix
-        distance_matrix = self.topology_analyzer.get_distance_matrix()
+        # Get Heavy-Hex topology analysis results
+        hex_clusters = self.analysis_results['hex_clusters']
+        distance_matrix = self.analysis_results['distance_matrix']
         
-        # Get available physical qubits (up to num_qubits needed)
-        available_physical = list(range(min(num_qubits, self.backend.configuration().n_qubits)))
+        print(f"📐 Found {len(hex_clusters)} Heavy-Hex clusters for assignment")
         
-        # Simple greedy assignment for now
         layout_dict = {}
         used_physical = set()
+        used_clusters = set()
         
-        # Sort communities by size (largest first)
+        # Sort communities by size (largest first) to assign big communities to hex clusters first
         communities = sorted(communities, key=len, reverse=True)
         
+        # Try to assign each community to the best available Heavy-Hex cluster
         for community in communities:
-            # Find best starting position for this community
-            best_start = self._find_best_community_placement(
-                community, 
-                interaction_graph,
-                distance_matrix,
-                available_physical,
-                used_physical
-            )
+            best_cost = np.inf
+            best_cluster = None
+            best_assignment = None
             
-            # Assign community members starting from best position
-            for i, logical_qubit in enumerate(community):
-                physical_qubit = (best_start + i) % len(available_physical)
-                while physical_qubit in used_physical:
-                    physical_qubit = (physical_qubit + 1) % len(available_physical)
+            # Try each available hex cluster
+            for cluster_idx, hex_cluster in enumerate(hex_clusters):
+                if cluster_idx in used_clusters:
+                    continue
+                    
+                # Skip if cluster is too small for community
+                if len(hex_cluster) < len(community):
+                    continue
                 
-                layout_dict[logical_qubit] = physical_qubit
-                used_physical.add(physical_qubit)
+                # Skip if any qubits in cluster are already used
+                if any(q in used_physical for q in hex_cluster):
+                    continue
+                
+                # Calculate cost of assigning this community to this cluster
+                cost, assignment = self._calculate_community_to_cluster_cost(
+                    community, hex_cluster, interaction_graph, distance_matrix
+                )
+                
+                if cost < best_cost:
+                    best_cost = cost
+                    best_cluster = cluster_idx
+                    best_assignment = assignment
+            
+            # Assign community to best cluster if found
+            if best_cluster is not None:
+                hex_cluster = hex_clusters[best_cluster]
+                print(f"  📍 Assigned community {community} to hex cluster {hex_cluster[:len(community)]}")
+                
+                for logical, physical in best_assignment.items():
+                    layout_dict[logical] = physical
+                    used_physical.add(physical)
+                
+                used_clusters.add(best_cluster)
+            else:
+                # No suitable hex cluster found, use greedy individual placement
+                print(f"  ⚠️  No hex cluster available for community {community}, using individual placement")
+                
+                for logical in community:
+                    best_physical = self._find_best_individual_placement(
+                        logical, interaction_graph, distance_matrix, used_physical, layout_dict
+                    )
+                    layout_dict[logical] = best_physical
+                    used_physical.add(best_physical)
         
         # Assign any remaining logical qubits
+        all_available = list(range(self.backend.configuration().n_qubits))
         for logical in range(num_qubits):
             if logical not in layout_dict:
-                for physical in available_physical:
+                for physical in all_available:
                     if physical not in used_physical:
                         layout_dict[logical] = physical
                         used_physical.add(physical)
@@ -207,13 +245,132 @@ class GreedyCommunityLayout(TransformationPass):
         
         return layout_dict
     
+    def _calculate_community_to_cluster_cost(self,
+                                           community: List[int],
+                                           hex_cluster: List[int],
+                                           interaction_graph: nx.Graph,
+                                           distance_matrix: np.ndarray) -> Tuple[float, Dict[int, int]]:
+        """Calculate cost of assigning a community to a specific hex cluster."""
+        
+        # Create assignment (map logical qubits to first N physical qubits in cluster)
+        assignment = {}
+        for i, logical in enumerate(community):
+            if i < len(hex_cluster):
+                assignment[logical] = hex_cluster[i]
+            else:
+                # Community larger than cluster - this shouldn't happen due to pre-filtering
+                return np.inf, {}
+        
+        # Calculate cost using proper border penalty + error penalty
+        total_cost = 0.0
+        lambda_error = 0.1  # Error penalty weight
+        
+        # Only penalize interactions that cross cluster boundaries or have significant distance
+        for i, q1 in enumerate(community):
+            for j, q2 in enumerate(community[i+1:], i+1):
+                if interaction_graph.has_edge(q1, q2):
+                    weight = interaction_graph[q1][q2]['weight']
+                    p1, p2 = assignment[q1], assignment[q2]
+                    
+                    # Distance penalty (for non-adjacent qubits)
+                    distance = distance_matrix[p1, p2]
+                    if distance > 1:  # Only penalize non-adjacent placements
+                        distance_cost = weight * distance
+                    else:
+                        distance_cost = 0  # Adjacent qubits have no penalty
+                    
+                    # CX error penalty
+                    cx_error = self._get_cx_error_rate(p1, p2)
+                    error_cost = lambda_error * weight * cx_error
+                    
+                    total_cost += distance_cost + error_cost
+        
+        return total_cost, assignment
+    
+    def _get_cx_error_rate(self, physical_qubit1: int, physical_qubit2: int) -> float:
+        """Get CX gate error rate between two physical qubits."""
+        try:
+            if hasattr(self.backend, 'properties') and self.backend.properties():
+                properties = self.backend.properties()
+                
+                # Try to get ECR gate error (IBM's native 2Q gate)
+                for gate in properties.gates:
+                    if (gate.gate == 'ecr' and 
+                        set(gate.qubits) == {physical_qubit1, physical_qubit2}):
+                        return gate.parameters[0].value  # gate error
+                        
+                # Fallback: try CX gate error
+                for gate in properties.gates:
+                    if (gate.gate == 'cx' and 
+                        set(gate.qubits) == {physical_qubit1, physical_qubit2}):
+                        return gate.parameters[0].value
+                        
+                # If no specific gate found, use average single-qubit error as approximation
+                qubit_errors = []
+                for qubit in [physical_qubit1, physical_qubit2]:
+                    if qubit < len(properties.qubits):
+                        qubit_props = properties.qubits[qubit]
+                        for param in qubit_props:
+                            if param.name == 'readout_error':
+                                qubit_errors.append(param.value)
+                
+                if qubit_errors:
+                    return sum(qubit_errors) / len(qubit_errors)
+                    
+        except Exception as e:
+            print(f"⚠️  Could not get error rate for qubits {physical_qubit1}-{physical_qubit2}: {e}")
+        
+        # Default error rate if properties not available
+        return 0.01  # 1% default error rate
+    
+    def _find_best_individual_placement(self,
+                                      logical_qubit: int,
+                                      interaction_graph: nx.Graph,
+                                      distance_matrix: np.ndarray,
+                                      used_physical: set,
+                                      current_layout: Dict[int, int] = None) -> int:
+        """Find best individual placement for a logical qubit."""
+        
+        if current_layout is None:
+            current_layout = {}
+        
+        best_cost = np.inf
+        best_physical = 0
+        all_available = list(range(self.backend.configuration().n_qubits))
+        
+        for physical in all_available:
+            if physical in used_physical:
+                continue
+                
+            # Calculate cost of placing this logical qubit at this physical location
+            cost = 0.0
+            lambda_error = 0.1
+            
+            # Check interactions with already-placed qubits
+            for neighbor in interaction_graph.neighbors(logical_qubit):
+                if neighbor in current_layout:
+                    neighbor_physical = current_layout[neighbor]
+                    weight = interaction_graph[logical_qubit][neighbor]['weight']
+                    distance = distance_matrix[physical, neighbor_physical]
+                    cx_error = self._get_cx_error_rate(physical, neighbor_physical)
+                    
+                    cost += weight * distance + lambda_error * weight * cx_error
+            
+            if cost < best_cost:
+                best_cost = cost
+                best_physical = physical
+        
+        return best_physical
+    
     def _find_best_community_placement(self,
                                      community: List[int],
                                      interaction_graph: nx.Graph,
                                      distance_matrix: np.ndarray,
                                      available_physical: List[int],
                                      used_physical: set) -> int:
-        """Find the best starting physical qubit for a community."""
+        """Find the best starting physical qubit for a community (legacy method - now unused)."""
+        # This method is now replaced by _calculate_community_to_cluster_cost
+        # but keeping for compatibility
         
         best_cost = np.inf
         best_start = 0
@@ -245,9 +402,12 @@ class GreedyCommunityLayout(TransformationPass):
                                 distance_matrix: np.ndarray,
                                 available_physical: List[int],
                                 used_physical: set) -> float:
-        """Calculate the cost of placing a community at a given position."""
+        """Calculate the cost of placing a community at a given position (legacy method)."""
+        # This method is now replaced by _calculate_community_to_cluster_cost
+        # but keeping for compatibility
         
         total_cost = 0.0
+        lambda_error = 0.1
         
         # Create temporary assignment for this community
         temp_assignment = {}
@@ -265,8 +425,15 @@ class GreedyCommunityLayout(TransformationPass):
                     p1, p2 = temp_assignment[q1], temp_assignment[q2]
                     
                     if p1 < len(distance_matrix) and p2 < len(distance_matrix):
+                        # Distance penalty (only for non-adjacent)
                         distance = distance_matrix[p1][p2]
-                        total_cost += weight * distance
+                        distance_cost = weight * distance if distance > 1 else 0
+                        
+                        # CX error penalty
+                        cx_error = self._get_cx_error_rate(p1, p2)
+                        error_cost = lambda_error * weight * cx_error
+                        
+                        total_cost += distance_cost + error_cost
         
         return total_cost
 
