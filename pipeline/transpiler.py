@@ -1,254 +1,149 @@
 """
-Transpiler Comparison Engine
+Quantum Circuit Transpilation Comparison
 
-Orchestrates comparison between custom layout optimization passes
-and stock Qiskit transpilation. Handles PassManager construction,
-transpilation execution, and results collection.
+This module provides tools for comparing stock Qiskit transpilation 
+with custom layout optimization approaches. 
+
+Now uses comprehensive metrics from layout_opt.utils for consistency
+and to avoid code duplication.
 """
 
-from typing import Dict, List, Optional, Any, Tuple
 import time
+from typing import Dict, List, Any, Optional
+
 from qiskit import QuantumCircuit, transpile
-from qiskit.transpiler import PassManager
 from qiskit.providers import Backend
+
 from config_loader import get_config
+# Import comprehensive metrics instead of duplicating logic
+from layout_opt.utils import transpile_and_score, compute_comprehensive_comparison
 
 
 class TranspilerComparison:
     """
-    Manages comparison between custom and stock transpilation.
+    Compare transpilation results between stock Qiskit and custom layout passes.
     
-    Provides a unified interface for running both custom layout optimization
-    and stock Qiskit transpilation, collecting metrics from both approaches.
+    Now uses the comprehensive metrics system from layout_opt.utils to ensure
+    consistent, detailed performance analysis including error-weighted metrics.
     """
     
     def __init__(self, backend: Backend, optimization_level: int = None):
-        """
-        Initialize transpiler comparison.
-        
-        Args:
-            backend: Target quantum backend (IBM Brisbane)
-            optimization_level: Qiskit optimization level for baseline (uses config if None)
-        """
-        config = get_config()
-        
+        """Initialize transpiler comparison."""
         self.backend = backend
+        config = get_config()
         self.optimization_level = optimization_level or config.get_optimization_level()
-        self.coupling_map = backend.coupling_map
-        
-        # Cache for expensive computations
-        self._distance_cache = {}
         
     def compare_transpilation(self, 
                             circuit: QuantumCircuit,
                             custom_layout_pass: Optional[Any] = None) -> Dict[str, Any]:
         """
-        Run both custom and stock transpilation and compare results.
+        Compare stock vs custom transpilation with comprehensive metrics.
         
         Args:
-            circuit: Input quantum circuit
-            custom_layout_pass: Custom layout pass (None for stock only)
+            circuit: Quantum circuit to transpile and compare
+            custom_layout_pass: Custom layout pass to test (None for stock only)
             
         Returns:
-            Dictionary with comparison results
+            Comprehensive comparison results with detailed metrics
         """
-        results = {
-            'circuit_name': getattr(circuit, 'name', 'unnamed'),
-            'input_stats': self._get_circuit_stats(circuit)
+        print(f"🔄 Running stock transpilation (opt_level={self.optimization_level})...")
+        
+        # Get input circuit statistics for context
+        input_stats = self._get_input_stats(circuit)
+        
+        # Run stock transpilation using comprehensive metrics
+        stock_metrics = transpile_and_score(
+            circuit, 
+            self.backend, 
+            layout_pass=None,  # Stock transpilation
+            optimization_level=self.optimization_level
+        )
+        
+        # Prepare stock result in expected format
+        stock_result = {
+            'success': stock_metrics.get('success', True),
+            'compile_time': stock_metrics.get('compile_time', 0.0),
+            'stats': self._convert_metrics_to_stats(stock_metrics),
+            'error_message': stock_metrics.get('error_message')
         }
         
-        # Run stock transpilation
-        print(f"🔄 Running stock transpilation (opt_level={self.optimization_level})...")
-        stock_result = self._transpile_stock(circuit)
-        results['stock'] = stock_result
-        
         # Run custom transpilation if layout pass provided
+        custom_result = None
         if custom_layout_pass is not None:
             print(f"🔄 Running custom transpilation...")
-            custom_result = self._transpile_custom(circuit, custom_layout_pass)
-            results['custom'] = custom_result
             
-            # Compute comparison metrics
-            results['comparison'] = self._compute_comparison_metrics(
-                custom_result, stock_result
-            )
-        else:
-            print("⚠️  No custom layout pass provided, skipping custom transpilation")
-            results['custom'] = None
-            results['comparison'] = None
-        
-        return results
-    
-    def _transpile_stock(self, circuit: QuantumCircuit) -> Dict[str, Any]:
-        """Run stock Qiskit transpilation."""
-        start_time = time.time()
-        
-        try:
-            # Use stock Qiskit preset pass manager
-            config = get_config()
-            transpiled = transpile(
+            custom_metrics = transpile_and_score(
                 circuit, 
-                backend=self.backend, 
-                optimization_level=self.optimization_level,
-                seed_transpiler=config.get_seed()  # For reproducibility
+                self.backend, 
+                layout_pass=custom_layout_pass,
+                optimization_level=self.optimization_level
             )
             
-            compile_time = time.time() - start_time
-            
-            return {
-                'transpiled_circuit': transpiled,
-                'success': True,
-                'compile_time': compile_time,
-                'stats': self._get_circuit_stats(transpiled),
-                'layout': getattr(transpiled, '_layout', None),
-                'error_message': None
+            custom_result = {
+                'success': custom_metrics.get('success', True),
+                'compile_time': custom_metrics.get('compile_time', 0.0),
+                'stats': self._convert_metrics_to_stats(custom_metrics),
+                'error_message': custom_metrics.get('error_message')
             }
-            
-        except Exception as e:
-            return {
-                'transpiled_circuit': None,
-                'success': False,
-                'compile_time': time.time() - start_time,
-                'stats': {},
-                'layout': None,
-                'error_message': str(e)
-            }
-    
-    def _transpile_custom(self, 
-                         circuit: QuantumCircuit, 
-                         layout_pass: Any) -> Dict[str, Any]:
-        """Run custom transpilation with layout pass."""
-        start_time = time.time()
         
-        try:
-            config = get_config()
-            
-            # Step 1: Run our custom layout pass to get the layout
-            from qiskit.transpiler import PassManager
-            layout_pm = PassManager([layout_pass])
-            
-            # Run layout pass on a copy of the circuit
-            circuit_copy = circuit.copy()
-            layout_pm.run(circuit_copy)
-            
-            # Step 2: Extract the layout from the layout pass property_set
-            if hasattr(layout_pass, 'property_set') and 'layout' in layout_pass.property_set:
-                layout = layout_pass.property_set['layout']
-                
-                # Convert Layout object to initial_layout dict format
-                if hasattr(layout, 'get_virtual_bits'):
-                    # Standard Layout object - get mapping of virtual to physical qubits
-                    initial_layout = layout.get_virtual_bits()
-                else:
-                    # Fallback - convert Layout to dict
-                    initial_layout = dict(layout)
-                
-                print(f"✅ Extracted custom layout: {len(initial_layout)} qubits mapped")
-                
-                # Step 3: Use standard Qiskit transpile with our custom initial layout
-                # This ensures all other stages (routing, optimization, scheduling) work properly
-                transpiled = transpile(
-                    circuit,
-                    backend=self.backend,
-                    optimization_level=self.optimization_level,
-                    initial_layout=initial_layout,
-                    seed_transpiler=config.get_seed()
-                )
-                
-            else:
-                print("⚠️  Could not extract layout from custom pass, falling back to standard transpile")
-                # Fallback to standard transpilation
-                transpiled = transpile(
-                    circuit,
-                    backend=self.backend,
-                    optimization_level=self.optimization_level,
-                    seed_transpiler=config.get_seed()
-                )
-            
-            compile_time = time.time() - start_time
-            
-            return {
-                'transpiled_circuit': transpiled,
-                'success': True,
-                'compile_time': compile_time,
-                'stats': self._get_circuit_stats(transpiled),
-                'layout': getattr(transpiled, '_layout', None),
-                'error_message': None
-            }
-            
-        except Exception as e:
-            compile_time = time.time() - start_time
-            print(f"❌ Custom transpilation failed: {str(e)}")
-            
-            return {
-                'transpiled_circuit': None,
-                'success': False,
-                'compile_time': compile_time,
-                'stats': {},
-                'layout': None,
-                'error_message': str(e)
-            }
+        # Compute comprehensive comparison using our improved metrics
+        comparison = None
+        if custom_result and stock_result['success'] and custom_result['success']:
+            comparison = compute_comprehensive_comparison(
+                custom_metrics, stock_metrics
+            )
+        elif custom_result:
+            comparison = {'comparison_valid': False}
+        
+        return {
+            'circuit_name': getattr(circuit, 'name', f'circuit_{circuit.num_qubits}q'),
+            'input_stats': input_stats,
+            'stock': stock_result,
+            'custom': custom_result,
+            'comparison': comparison
+        }
     
-    def _get_circuit_stats(self, circuit: QuantumCircuit) -> Dict[str, Any]:
-        """Extract comprehensive circuit statistics."""
+    def _get_input_stats(self, circuit: QuantumCircuit) -> Dict[str, int]:
+        """Get basic statistics about the input circuit."""
         gate_counts = circuit.count_ops()
-        
-        # Count 2-qubit gates specifically
-        two_qubit_gates = ['cx', 'cz', 'ecr', 'rzz', 'rxx', 'ryy', 'rzx']
+        two_qubit_gates = {'cx', 'cz', 'ecr', 'rzz', 'rxx', 'ryy', 'rzx', 'iswap', 'swap'}
         cx_count = sum(gate_counts.get(gate, 0) for gate in two_qubit_gates)
-        
-        # Count single-qubit gates
-        single_qubit_count = sum(count for gate, count in gate_counts.items() 
-                               if gate not in two_qubit_gates)
         
         return {
             'num_qubits': circuit.num_qubits,
             'depth': circuit.depth(),
-            'gate_counts': gate_counts,
             'cx_count': cx_count,
-            'single_qubit_count': single_qubit_count,
             'total_gates': sum(gate_counts.values())
         }
     
-    def _compute_comparison_metrics(self, 
-                                  custom_result: Dict[str, Any],
-                                  stock_result: Dict[str, Any]) -> Dict[str, float]:
-        """Compute comparison metrics between custom and stock results."""
-        if not (custom_result['success'] and stock_result['success']):
-            return {'comparison_valid': False}
+    def _convert_metrics_to_stats(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Convert comprehensive metrics to the stats format expected by the notebook.
         
-        custom_stats = custom_result['stats']
-        stock_stats = stock_result['stats']
-        
-        # Compute reduction percentages
-        def compute_reduction(custom_val, stock_val):
-            if stock_val == 0:
-                return 0.0
-            return (1.0 - custom_val / stock_val) * 100.0
-        
+        This maintains backward compatibility while using comprehensive metrics.
+        """
+        if not metrics.get('success', True):
+            return {}
+            
         return {
-            'comparison_valid': True,
-            'cx_reduction_percent': compute_reduction(
-                custom_stats['cx_count'], stock_stats['cx_count']
-            ),
-            'depth_reduction_percent': compute_reduction(
-                custom_stats['depth'], stock_stats['depth']
-            ),
-            'total_gates_reduction_percent': compute_reduction(
-                custom_stats['total_gates'], stock_stats['total_gates']
-            ),
-            'compile_time_ratio': (
-                custom_result['compile_time'] / stock_result['compile_time']
-                if stock_result['compile_time'] > 0 else float('inf')
-            ),
-            'absolute_cx_reduction': (
-                stock_stats['cx_count'] - custom_stats['cx_count']
-            ),
-            'absolute_depth_reduction': (
-                stock_stats['depth'] - custom_stats['depth']
-            )
+            'num_qubits': metrics.get('n_qubits', 0),
+            'depth': metrics.get('depth', 0),
+            'gate_counts': metrics.get('gate_counts', {}),
+            'cx_count': metrics.get('cx_count', 0),
+            'single_qubit_count': metrics.get('single_qubit_count', 0),
+            'total_gates': metrics.get('total_gates', 0),
+            
+            # New comprehensive metrics (bonus!)
+            'error_weighted_cx': metrics.get('error_weighted_cx', 0.0),
+            'error_weighted_total': metrics.get('error_weighted_total', 0.0),
+            'connectivity_score': metrics.get('connectivity_score', 0.0),
+            'gate_density': metrics.get('gate_density', 0.0),
+            'depth_efficiency': metrics.get('depth_efficiency', 0.0),
+            'ecr_count': metrics.get('ecr_count', 0),
+            'sx_count': metrics.get('sx_count', 0),
+            'rz_count': metrics.get('rz_count', 0)
         }
-    
+
     def batch_compare(self, 
                      circuits: Dict[str, QuantumCircuit],
                      custom_layout_pass: Optional[Any] = None) -> List[Dict[str, Any]]:
@@ -289,7 +184,7 @@ class TranspilerComparison:
 
 if __name__ == "__main__":
     # Test transpiler comparison
-    from qiskit.providers.fake_provider import FakeBrisbane
+    from qiskit_ibm_runtime.fake_provider import FakeBrisbane
     from qiskit.circuit.library import QuantumVolume
     
     backend = FakeBrisbane()
@@ -310,3 +205,5 @@ if __name__ == "__main__":
     if result['stock']['success']:
         print(f"  Stock CX count: {result['stock']['stats']['cx_count']}")
         print(f"  Stock depth: {result['stock']['stats']['depth']}")
+        print(f"  Error-weighted CX: {result['stock']['stats']['error_weighted_cx']:.4f}")
+        print(f"  Connectivity score: {result['stock']['stats']['connectivity_score']:.3f}")

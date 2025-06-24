@@ -15,7 +15,7 @@ Algorithm:
 from typing import Dict, List, Optional, Tuple, Any
 import networkx as nx
 import numpy as np
-from qiskit.transpiler import TransformationPass, Layout
+from qiskit.transpiler import TransformationPass, Layout, PassManager
 from qiskit.transpiler.coupling import CouplingMap
 from qiskit.providers import Backend
 from qiskit.dagcircuit import DAGCircuit
@@ -77,8 +77,17 @@ class GreedyCommunityLayout(TransformationPass):
         print(f"🔄 Building interaction graph for {dag.num_qubits()} qubits...")
         interaction_graph = self._build_interaction_graph(dag)
         
+        # DEBUG: Show interaction graph details
+        print(f"📊 Interaction graph: {interaction_graph.number_of_nodes()} nodes, {interaction_graph.number_of_edges()} edges")
+        if interaction_graph.number_of_edges() > 0:
+            edge_weights = [data['weight'] for _, _, data in interaction_graph.edges(data=True)]
+            print(f"    Total interactions: {sum(edge_weights)}")
+            print(f"    Max edge weight: {max(edge_weights)}")
+            print(f"    First 5 edges: {list(interaction_graph.edges(data=True))[:5]}")
+        
         if interaction_graph.number_of_edges() == 0:
             # No interactions, use trivial layout
+            print("⚠️  No interactions found - using trivial layout (this bypasses all Heavy-Hex logic!)")
             layout_dict = {dag.qubits[i]: i for i in range(dag.num_qubits())}
             layout = Layout(layout_dict)
             self.property_set['layout'] = layout
@@ -125,16 +134,18 @@ class GreedyCommunityLayout(TransformationPass):
         layout = Layout(layout_dict_qubits)
         self.property_set['layout'] = layout
         
-        # Also set on the DAG for compatibility
-        dag._layout = layout
-        
         print(f"✅ Layout optimization complete: {len(layout_dict)} qubits assigned")
         return dag
     
+    # REMOVED: Broken create_complete_pass_manager method
+    # This method was fundamentally broken because it called transpile() inside a transpilation pass,
+    # creating recursion and defeating the purpose of custom layout optimization.
+    # The correct approach is to use proper PassManager construction externally.
+    
     def _build_interaction_graph(self, dag: DAGCircuit) -> nx.Graph:
         """Build weighted interaction graph from circuit."""
-        # Convert DAG to QuantumCircuit for analysis
-        from qiskit import QuantumCircuit
+        # USE PROPER QISKIT DAG→CIRCUIT CONVERSION
+        from qiskit.converters import dag_to_circuit
         circuit = dag_to_circuit(dag)
         return self.circuit_analyzer.build_interaction_graph(circuit)
     
@@ -148,9 +159,23 @@ class GreedyCommunityLayout(TransformationPass):
             if 'error' in result:
                 continue
                 
+            # GET ORIGINAL SCORE
             score = result.get('quantum_score', 0)
-            if score > best_score:
-                best_score = score
+            
+            # ADD: HEAVY PENALTY FOR OVERSIZED COMMUNITIES  
+            communities = result['communities']
+            oversized_penalty = 0
+            for community in communities:
+                if len(community) > 7:  # Max hex cluster size
+                    # Massive penalty for communities that can't fit in hex clusters
+                    oversized_penalty += (len(community) - 7) * 10.0  # 10x penalty per extra qubit
+            
+            adjusted_score = score - oversized_penalty
+            
+            print(f"    🔍 {algo}: original_score={score:.3f}, oversized_penalty={oversized_penalty:.3f}, adjusted_score={adjusted_score:.3f}")
+            
+            if adjusted_score > best_score:
+                best_score = adjusted_score
                 best_algo = algo
                 best_result = result
         
@@ -204,7 +229,7 @@ class GreedyCommunityLayout(TransformationPass):
                 
                 # Calculate cost of assigning this community to this cluster
                 cost, assignment = self._calculate_community_to_cluster_cost(
-                    community, hex_cluster, interaction_graph, distance_matrix
+                    community, hex_cluster, interaction_graph, distance_matrix, layout_dict
                 )
                 
                 if cost < best_cost:
@@ -249,43 +274,233 @@ class GreedyCommunityLayout(TransformationPass):
                                            community: List[int],
                                            hex_cluster: List[int],
                                            interaction_graph: nx.Graph,
-                                           distance_matrix: np.ndarray) -> Tuple[float, Dict[int, int]]:
-        """Calculate cost of assigning a community to a specific hex cluster."""
+                                           distance_matrix: np.ndarray,
+                                           current_global_layout: Dict[int, int]) -> Tuple[float, Dict[int, int]]:
+        """
+        Calculate cost of assigning a community to a specific hex cluster.
         
-        # Create assignment (map logical qubits to first N physical qubits in cluster)
-        assignment = {}
-        for i, logical in enumerate(community):
-            if i < len(hex_cluster):
-                assignment[logical] = hex_cluster[i]
-            else:
-                # Community larger than cluster - this shouldn't happen due to pre-filtering
-                return np.inf, {}
+        COMPLETE COST FORMULA:
+        Cost(C,S;π) = Σ(u<v∈C) w_uv * [max(0, d_π(u)π(v) - 1)]  [internal distance excess]
+                    + Σ(u∈C, x∈V_fixed) w_ux * d_π(u)π(x)     [edges to already-placed]  
+                    + λ * (internal_error + external_error)
+        """
         
-        # Calculate cost using proper border penalty + error penalty
-        total_cost = 0.0
+        # Create geometric assignment within hex cluster
+        assignment = self._create_geometric_assignment(community, hex_cluster, interaction_graph)
+        
+        if len(assignment) != len(community):
+            # Community larger than cluster - this shouldn't happen due to pre-filtering
+            return np.inf, {}
+        
         lambda_error = 0.1  # Error penalty weight
         
-        # Only penalize interactions that cross cluster boundaries or have significant distance
+        print(f"    🔍 Evaluating community {community} → hex cluster {hex_cluster[:len(community)]}")
+        
+        # TERM 1: Internal distance excess penalty - Σ(u<v∈C) w_uv * [max(0, d_π(u)π(v) - 1)]
+        internal_distance_cost = 0.0
+        internal_error_cost = 0.0
+        total_internal_interactions = 0
+        
         for i, q1 in enumerate(community):
             for j, q2 in enumerate(community[i+1:], i+1):
                 if interaction_graph.has_edge(q1, q2):
+                    total_internal_interactions += 1
                     weight = interaction_graph[q1][q2]['weight']
                     p1, p2 = assignment[q1], assignment[q2]
                     
-                    # Distance penalty (for non-adjacent qubits)
+                    # FIXED: Only penalize distance > 1 (excess distance within hex)
                     distance = distance_matrix[p1, p2]
-                    if distance > 1:  # Only penalize non-adjacent placements
-                        distance_cost = weight * distance
-                    else:
-                        distance_cost = 0  # Adjacent qubits have no penalty
+                    distance_excess = max(0, distance - 1)  # ← KEY FIX
+                    distance_penalty = weight * distance_excess
+                    internal_distance_cost += distance_penalty
                     
-                    # CX error penalty
+                    # Internal error penalty
                     cx_error = self._get_cx_error_rate(p1, p2)
-                    error_cost = lambda_error * weight * cx_error
+                    internal_error_cost += weight * cx_error
                     
-                    total_cost += distance_cost + error_cost
+                    print(f"      🔗 Internal: {q1}→{q2} (phys {p1}→{p2}), "
+                          f"weight={weight}, distance={distance:.1f}, excess={distance_excess:.1f}, "
+                          f"dist_cost={distance_penalty:.2f}, error_cost={weight * cx_error:.3f}")
+        
+        # TERM 2: External edges cost - Σ(u∈C, x∈V_fixed) w_ux * d_π(u)π(x)
+        external_distance_cost = 0.0
+        external_error_cost = 0.0
+        total_external_interactions = 0
+        
+        # FIXED: Now actually use current_global_layout
+        V_fixed = set(current_global_layout.keys())  # Already-mapped logical qubits
+        
+        for u in community:
+            p_u = assignment[u]  # Physical location of community qubit u
+            
+            # Check interactions with all already-placed qubits
+            for x in V_fixed:
+                if interaction_graph.has_edge(u, x):
+                    total_external_interactions += 1
+                    weight = interaction_graph[u][x]['weight']
+                    p_x = current_global_layout[x]  # Physical location of already-placed qubit
+                    
+                    # External distance cost (no max(0, d-1) here - full distance matters)
+                    distance = distance_matrix[p_u, p_x]
+                    distance_penalty = weight * distance
+                    external_distance_cost += distance_penalty
+                    
+                    # External error penalty
+                    cx_error = self._get_cx_error_rate(p_u, p_x)
+                    external_error_cost += weight * cx_error
+                    
+                    print(f"      🌐 External: {u}→{x} (phys {p_u}→{p_x}), "
+                          f"weight={weight}, distance={distance:.1f}, "
+                          f"dist_cost={distance_penalty:.2f}, error_cost={weight * cx_error:.3f}")
+        
+        # TOTAL COST: All three terms
+        total_cost = (internal_distance_cost + 
+                     external_distance_cost + 
+                     lambda_error * (internal_error_cost + external_error_cost))
+        
+        print(f"    💰 Cost breakdown:")
+        print(f"       Internal distance (excess): {internal_distance_cost:.2f}")
+        print(f"       External distance: {external_distance_cost:.2f}")
+        print(f"       Internal error (λ={lambda_error}): {lambda_error * internal_error_cost:.3f}")
+        print(f"       External error (λ={lambda_error}): {lambda_error * external_error_cost:.3f}")
+        print(f"       TOTAL: {total_cost:.2f}")
+        print(f"    📊 Interactions: {total_internal_interactions} internal, {total_external_interactions} external")
         
         return total_cost, assignment
+    
+    def _create_geometric_assignment(self, 
+                                   community: List[int], 
+                                   hex_cluster: List[int],
+                                   interaction_graph: nx.Graph) -> Dict[int, int]:
+        """
+        Create geometry-aware assignment within hex cluster.
+        Uses heavy-hex topology structure to place highly connected qubits optimally.
+        """
+        if len(community) > len(hex_cluster):
+            return {}
+        
+        # STEP 1: Analyze connectivity within community
+        connectivity = {}
+        edge_weights = {}
+        for logical in community:
+            degree = 0
+            for other in community:
+                if other != logical and interaction_graph.has_edge(logical, other):
+                    weight = interaction_graph[logical][other]['weight']
+                    degree += weight
+                    edge_weights[(min(logical, other), max(logical, other))] = weight
+            connectivity[logical] = degree
+        
+        # STEP 2: Analyze geometry within hex cluster using distance matrix
+        cluster_distances = {}
+        cluster_centrality = {}
+        
+        # Get distance matrix from topology analyzer
+        distance_matrix = self.analysis_results['distance_matrix']
+        
+        # Calculate centrality of each position in hex cluster
+        for i, phys_i in enumerate(hex_cluster):
+            centrality = 0.0
+            for j, phys_j in enumerate(hex_cluster):
+                if i != j and phys_i < len(distance_matrix) and phys_j < len(distance_matrix):
+                    dist = distance_matrix[phys_i, phys_j]
+                    cluster_distances[(phys_i, phys_j)] = dist
+                    # Central positions have lower average distance to others
+                    centrality += 1.0 / (1.0 + dist)  # Inverse distance centrality
+            cluster_centrality[phys_i] = centrality
+        
+        # STEP 3: Greedy optimization assignment
+        # Most connected logical qubits → most central physical positions
+        assignment = {}
+        used_physical = set()
+        
+        # Sort logical qubits by connectivity (highest first)
+        sorted_logical = sorted(community, key=lambda q: connectivity[q], reverse=True)
+        
+        # Sort physical positions by centrality (most central first)  
+        sorted_physical = sorted(hex_cluster, key=lambda p: cluster_centrality.get(p, 0), reverse=True)
+        
+        # For small communities, use simple greedy matching
+        if len(community) <= 3:
+            for i, logical in enumerate(sorted_logical):
+                if i < len(sorted_physical):
+                    assignment[logical] = sorted_physical[i]
+                    used_physical.add(sorted_physical[i])
+        else:
+            # For larger communities, use optimization-based assignment
+            assignment = self._optimize_hex_assignment(
+                community, hex_cluster, interaction_graph, 
+                edge_weights, cluster_distances, connectivity, cluster_centrality
+            )
+        
+        return assignment
+    
+    def _optimize_hex_assignment(self, 
+                               community: List[int],
+                               hex_cluster: List[int], 
+                               interaction_graph: nx.Graph,
+                               edge_weights: Dict[Tuple[int, int], float],
+                               cluster_distances: Dict[Tuple[int, int], float],
+                               connectivity: Dict[int, float],
+                               cluster_centrality: Dict[int, float]) -> Dict[int, int]:
+        """
+        Optimize assignment using local search within hex cluster.
+        Minimizes weighted distance cost for high-interaction edges.
+        """
+        import random
+        
+        # Initialize with greedy assignment
+        assignment = {}
+        used_physical = set()
+        
+        sorted_logical = sorted(community, key=lambda q: connectivity[q], reverse=True)
+        sorted_physical = sorted(hex_cluster, key=lambda p: cluster_centrality.get(p, 0), reverse=True)
+        
+        for i, logical in enumerate(sorted_logical):
+            if i < len(sorted_physical):
+                assignment[logical] = sorted_physical[i]
+                used_physical.add(sorted_physical[i])
+        
+        # Calculate initial cost
+        def calculate_cost(assign):
+            cost = 0.0
+            for (l1, l2), weight in edge_weights.items():
+                if l1 in assign and l2 in assign:
+                    p1, p2 = assign[l1], assign[l2]
+                    dist = cluster_distances.get((min(p1, p2), max(p1, p2)), 1.0)
+                    cost += weight * dist
+            return cost
+        
+        current_cost = calculate_cost(assignment)
+        best_assignment = assignment.copy()
+        best_cost = current_cost
+        
+        # Simple local search: try swapping pairs
+        random.seed(self.seed)
+        for _ in range(20 * len(community)):  # Limited iterations for speed
+            if len(community) < 2:
+                break
+                
+            # Pick two random logical qubits to swap
+            l1, l2 = random.sample(community, 2)
+            if l1 not in assignment or l2 not in assignment:
+                continue
+                
+            # Swap their physical assignments
+            p1, p2 = assignment[l1], assignment[l2]
+            assignment[l1], assignment[l2] = p2, p1
+            
+            # Check if this improves cost
+            new_cost = calculate_cost(assignment)
+            if new_cost < best_cost:
+                best_cost = new_cost
+                best_assignment = assignment.copy()
+            
+            # Revert swap
+            assignment[l1], assignment[l2] = p1, p2
+        
+        print(f"      🎯 Hex assignment optimization: {current_cost:.2f} → {best_cost:.2f}")
+        return best_assignment
     
     def _get_cx_error_rate(self, physical_qubit1: int, physical_qubit2: int) -> float:
         """Get CX gate error rate between two physical qubits."""
@@ -361,102 +576,6 @@ class GreedyCommunityLayout(TransformationPass):
                 best_physical = physical
         
         return best_physical
-    
-    def _find_best_community_placement(self,
-                                     community: List[int],
-                                     interaction_graph: nx.Graph,
-                                     distance_matrix: np.ndarray,
-                                     available_physical: List[int],
-                                     used_physical: set) -> int:
-        """Find the best starting physical qubit for a community (legacy method - now unused)."""
-        # This method is now replaced by _calculate_community_to_cluster_cost
-        # but keeping for compatibility
-        
-        best_cost = np.inf
-        best_start = 0
-        
-        for start_pos in available_physical:
-            if start_pos in used_physical:
-                continue
-                
-            # Calculate cost for placing community starting at this position
-            cost = self._calculate_placement_cost(
-                community,
-                start_pos,
-                interaction_graph,
-                distance_matrix,
-                available_physical,
-                used_physical
-            )
-            
-            if cost < best_cost:
-                best_cost = cost
-                best_start = start_pos
-        
-        return best_start
-    
-    def _calculate_placement_cost(self,
-                                community: List[int],
-                                start_pos: int,
-                                interaction_graph: nx.Graph,
-                                distance_matrix: np.ndarray,
-                                available_physical: List[int],
-                                used_physical: set) -> float:
-        """Calculate the cost of placing a community at a given position (legacy method)."""
-        # This method is now replaced by _calculate_community_to_cluster_cost
-        # but keeping for compatibility
-        
-        total_cost = 0.0
-        lambda_error = 0.1
-        
-        # Create temporary assignment for this community
-        temp_assignment = {}
-        for i, logical in enumerate(community):
-            physical = (start_pos + i) % len(available_physical)
-            while physical in used_physical:
-                physical = (physical + 1) % len(available_physical)
-            temp_assignment[logical] = physical
-        
-        # Calculate interaction costs within community
-        for i, q1 in enumerate(community):
-            for j, q2 in enumerate(community[i+1:], i+1):
-                if interaction_graph.has_edge(q1, q2):
-                    weight = interaction_graph[q1][q2]['weight']
-                    p1, p2 = temp_assignment[q1], temp_assignment[q2]
-                    
-                    if p1 < len(distance_matrix) and p2 < len(distance_matrix):
-                        # Distance penalty (only for non-adjacent)
-                        distance = distance_matrix[p1][p2]
-                        distance_cost = weight * distance if distance > 1 else 0
-                        
-                        # CX error penalty
-                        cx_error = self._get_cx_error_rate(p1, p2)
-                        error_cost = lambda_error * weight * cx_error
-                        
-                        total_cost += distance_cost + error_cost
-        
-        return total_cost
-
-
-def dag_to_circuit(dag: DAGCircuit):
-    """Convert DAG to QuantumCircuit for analysis."""
-    from qiskit import QuantumCircuit
-    
-    # Create circuit with same number of qubits
-    circuit = QuantumCircuit(dag.num_qubits())
-    
-    # Create qubit index mapping
-    qubit_map = {qubit: i for i, qubit in enumerate(dag.qubits)}
-    
-    # Add gates from DAG (simplified conversion)
-    for node in dag.topological_op_nodes():
-        if len(node.qargs) == 2:  # Two-qubit gate
-            q1_idx = qubit_map[node.qargs[0]]
-            q2_idx = qubit_map[node.qargs[1]]
-            circuit.cx(q1_idx, q2_idx)  # Treat all as CX for interaction counting
-    
-    return circuit
-
 
 if __name__ == "__main__":
     print("GreedyCommunityLayout implementation complete!") 

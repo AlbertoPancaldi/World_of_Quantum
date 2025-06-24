@@ -47,8 +47,9 @@ class MetricsCollector:
         
         rows = []
         for result in self.results_history:
-            if not result.get('comparison') or not result['comparison'].get('comparison_valid'):
-                continue
+            # Include all results, even failed comparisons for proper analysis
+            has_valid_comparison = (result.get('comparison') and 
+                                  result['comparison'].get('comparison_valid'))
                 
             row = {
                 'circuit_name': result['circuit_name'],
@@ -58,21 +59,21 @@ class MetricsCollector:
                 
                 # Stock results
                 'stock_success': result['stock']['success'],
-                'stock_cx_count': result['stock']['stats'].get('cx_count', 0),
-                'stock_depth': result['stock']['stats'].get('depth', 0),
+                'stock_cx_count': result['stock']['stats'].get('cx_count', 0) if result['stock']['success'] else 0,
+                'stock_depth': result['stock']['stats'].get('depth', 0) if result['stock']['success'] else 0,
                 'stock_compile_time': result['stock']['compile_time'],
                 
                 # Custom results
                 'custom_success': result['custom']['success'] if result['custom'] else False,
-                'custom_cx_count': result['custom']['stats'].get('cx_count', 0) if result['custom'] else 0,
-                'custom_depth': result['custom']['stats'].get('depth', 0) if result['custom'] else 0,
+                'custom_cx_count': result['custom']['stats'].get('cx_count', 0) if (result['custom'] and result['custom']['success']) else 0,
+                'custom_depth': result['custom']['stats'].get('depth', 0) if (result['custom'] and result['custom']['success']) else 0,
                 'custom_compile_time': result['custom']['compile_time'] if result['custom'] else 0,
                 
-                # Comparison metrics
-                'cx_reduction_percent': result['comparison']['cx_reduction_percent'],
-                'depth_reduction_percent': result['comparison']['depth_reduction_percent'],
-                'compile_time_ratio': result['comparison']['compile_time_ratio'],
-                'absolute_cx_reduction': result['comparison']['absolute_cx_reduction'],
+                # Comparison metrics (only if valid comparison)
+                'cx_reduction_percent': result['comparison']['cx_reduction_percent'] if has_valid_comparison else 0,
+                'depth_reduction_percent': result['comparison']['depth_reduction_percent'] if has_valid_comparison else 0,
+                'compile_time_ratio': result['comparison']['compile_time_ratio'] if has_valid_comparison else 0,
+                'absolute_cx_reduction': result['comparison']['absolute_cx_reduction'] if has_valid_comparison else 0,
             }
             rows.append(row)
         
