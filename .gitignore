@@ -1,5 +1,14 @@
 # Ignore the virtual-environment folder
-venv_WoQ/
+
+
+# Virtual environment directories
+# ignore all virtual environment directories
+*env*/
+
+# ignore .env files
+.env
+
+
 
 # Byte-compiled / cache files
 __pycache__/
