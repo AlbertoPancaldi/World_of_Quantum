@@ -31,7 +31,7 @@ benchmarks:
   active_suite: "quantum_volume"          # Options: quantum_volume, application_circuits, qasm_circuits
   
   # Circuit sizes to test (simple list)
-  circuit_sizes: [50, 25, 60]             # Qubit counts to benchmark
+  circuit_sizes: [14, 25, 60]             # Qubit counts to benchmark
     
   # Quantum Volume settings
   quantum_volume:
@@ -86,7 +86,7 @@ layout_optimization:
 # TRANSPILATION SETTINGS
 # =============================================================================
 transpilation:
-  baseline_optimization_level: 3          # Qiskit optimization level for comparison
+  baseline_optimization_level: 1         # Qiskit optimization level for comparison
 
 # =============================================================================
 # PERFORMANCE TARGETS
