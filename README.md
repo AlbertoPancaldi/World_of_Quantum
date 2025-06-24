@@ -11,32 +11,15 @@
     pip install --upgrade pip
     pip install -r requirements.txt
 
-4. Create the .gitignore file
-    cat << EOF > .gitignore
-    # Ignore the virtual-environment folder
-    venv/
-
-    # Python bytecode and cache
-    __pycache__/
-    *.py[cod]
-
-    # Jupyter notebook checkpoints
-    .ipynb_checkpoints/
-
-    # Optional extras
-    *.log
-    *.tmp
-    EOF
-
-5. Stage your changes 
+4. Stage your changes 
    git add path/to/file(s).
    git commit -m "Briefly describe what you changed"
    git push origin main
 
-6. Pulling Remote Changes
+5. Pulling Remote Changes
     git pull origin main
 
-7. Sanity check
+6. Sanity check
     git status
 
 
