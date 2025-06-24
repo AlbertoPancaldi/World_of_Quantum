@@ -1,0 +1,2 @@
+https://arxiv.org/pdf/2410.02946, Extended quantum circuit diagrams
+https://arxiv.org/pdf/2412.15165, Experimental demonstration of logical magic state distillation
