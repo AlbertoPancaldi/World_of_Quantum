@@ -1,0 +1,71 @@
+# =============================================================================
+# QUANTUM LAYOUT OPTIMIZATION CONFIGURATION - MINIMAL VERSION
+# =============================================================================
+# 
+# This config contains ONLY parameters actually used in the codebase.
+# No bloat, no unused settings - just what's needed for the pipeline.
+#
+# =============================================================================
+
+# =============================================================================
+# EXPERIMENT SETTINGS
+# =============================================================================
+experiment:
+  name: "heavy_hex_optimization"
+  description: "Layout optimization for IBM Heavy-Hex backends targeting 25% CX reduction"
+  seed: 42                                # Global random seed for reproducibility
+  output_dir: "results"                   # Output directory for results
+
+# =============================================================================
+# BACKEND CONFIGURATION
+# =============================================================================
+backend:
+  name: "FakeBrisbane"                    # Backend to use: FakeBrisbane, FakePerth, FakeSherbrooke
+  num_qubits: 127                         # Number of qubits (for display only)
+
+# =============================================================================
+# BENCHMARK SETTINGS
+# =============================================================================
+benchmarks:
+  # Which benchmark suite to run (only one active at a time)
+  active_suite: "quantum_volume"          # Options: quantum_volume, application_circuits, qasm_circuits
+  
+  # Circuit sizes to test (simple list)
+  circuit_sizes: [15, 25, 60]             # Qubit counts to benchmark
+    
+  # Quantum Volume settings
+  quantum_volume:
+    depth_factor: 1.0                     # Circuit depth = width × depth_factor
+    
+  # Application circuit settings
+  application_circuits:
+    qaoa:
+      layers: 2                           # QAOA depth parameter (p)
+    vqe:
+      ansatz_reps: 2                      # VQE ansatz repetitions
+
+# =============================================================================
+# LAYOUT OPTIMIZATION
+# =============================================================================
+layout_optimization:
+  algorithm: "simple"                     # Algorithm to use: simple, community, stock
+  
+  # Annealing settings (when enabled)
+  annealing:
+    enabled: false
+    max_time_seconds: 1.0
+    initial_temperature: 3.0
+    cooling_rate: 0.95
+    max_steps: 800
+
+# =============================================================================
+# TRANSPILATION SETTINGS
+# =============================================================================
+transpilation:
+  baseline_optimization_level: 3          # Qiskit optimization level for comparison
+
+# =============================================================================
+# PERFORMANCE TARGETS
+# =============================================================================
+targets:
+  cx_reduction_target_percent: 25.0      # Target CX gate reduction
