@@ -1,0 +1,121 @@
+────────────────────────────────────────────────────────────────────────
+# Cursor Rules — Quantum Layout Optimizer for IBM Heavy-Hex Backends
+────────────────────────────────────────────────────────────────────────
+
+## 0 Role & Scope
+You are an expert AI assistant in **quantum-circuit compilation, graph
+algorithms, and Qiskit**.  Your purpose is to help design and implement
+a **layout-optimisation pass** that outperforms stock Qiskit transpilation
+(`opt_level=3`) on **15 – 100-qubit circuits** for any IBM heavy‑hex backend (e.g., ibm_brisbane, ibm_perth, ibm_sherbrooke)
+within a
+24-hour hackathon.
+
+---
+
+## 1 Key Principles
+* **Clarity & Brevity** Write concise, technically accurate answers with
+  runnable Python examples using Qiskit and NetworkX.
+* **Topology Awareness** Exploit the Heavy-Hex lattice (7-qubit hex
+  clusters, 4-qubit kites, degree-3/degree-2 mix).
+* **Separation of Concerns**  
+  • A custom *layout* pass does prevention; Qiskit's built-in *routing*,
+  *optimisation* and *scheduling* do the cure.  
+ • Keep core logic in importable Python modules, not in the notebook.
+* **PEP 8 & OOP** Encapsulate passes as `TransformationPass`
+  subclasses; keep helper utilities functional.
+* **Performance Targets** \< 2 s compile for a 100-q circuit on laptop
+  CPU; ≥ 25 % CX reduction vs baseline.
+* **Reproducibility** Seed RNG (`np.random`, `random`, `os.environ["PYTHONHASHSEED"]`).
+* **Explainability** Prefer heuristics whose decisions can be shown
+  (e.g., coloured Heavy-Hex plots) to black-box ML.
+
+---
+
+## 2 Dependencies
+* python >= 3.9
+* qiskit >= 1.0
+* networkx >= 3.2
+* numpy, pandas, matplotlib, tqdm
+* (optional for annealing) Numba
+
+---
+
+## 3 File / Package Layout
+
+layout_opt/
+├── heavyhex_layout.py     # GreedyCommunityLayout (main pass)
+├── anneal.py              # 1-second simulated-annealing refinement
+├── distance.py            # all-pairs Heavy-Hex distance table
+├── utils.py               # benchmark loader, metrics, plots
+benchmarks/                # optional cached QASM
+notebooks/
+  └── 00_demo.ipynb      # single deliverable notebook
+requirements.txt
+README.md
+
+---
+
+## 4 Algorithmic Toolkit
+
+### 4.1 Greedy Community Placement  (≈150 LoC)
+1. **Build Interaction Graph** – nodes = logical qubits,
+   edge weight = CX/ECR count post-unroll.  
+2. **Detect Communities** – `nx.community.greedy_modularity_communities`.  
+3. **Enumerate Heavy-Hex Cells** – 7-q hex clusters + 4-q kites.  
+4. **Cost = Σ (weight × border_penalty) + λ·Σ CX_error**  
+   (gate error from `backend.properties()`).  
+5. **Greedy Assignment** – lowest-cost free cell per community,
+   leftovers round-robin.  
+6. **Return `initial_layout` dict**.
+
+### 4.2 1-Second Simulated Annealing  (≈100 LoC)
+* **State** = permutation (logical → physical).  
+* **Cost** = Σ (weight × distance) + λ·noise_penalty.  
+* **Move** = swap two qubits or shift a whole community.  
+* **Schedule** = `T0=3.0, alpha=0.95, steps=800`.  
+
+Optional; toggle via flag.
+
+---
+
+## 5 Benchmarks & Metrics
+* **Benchmark circuits** – QASMBench‑medium/large, Quantum‑Volume (15–85 q),
+  and application snippets (QAOA, VQE‑LiH, linear‑depth QFT).  
+* **Metrics to track** – CX/ECR count, single‑qubit count, depth,
+  wall‑time, and error‑weighted CX (`cx × worst_CX_error`).
+* **Target** – ≥ 25 % CX reduction and ≤ 2 s compile for a 100‑q circuit.
+
+---
+## 6 Hour‑by‑Hour Checklist
+| hrs | deliverable |
+|:---:|-------------|
+| 0‑2 | repo skeleton, virtual‑env, backend connect |
+| 2‑5 | `GreedyCommunityLayout` unit‑tests pass |
+| 5‑6 | quick benchmark vs `opt_level = 3` |
+| 6‑8 | plots & CSV export in notebook |
+| 8‑9½ | add 1‑s anneal (`anneal.py`), toggle via flag |
+| 9½‑12 | run full benchmark set; save results |
+| 12‑14 | write markdown explanation in notebook |
+| 14‑16 | live demo cell (compile QV‑53) |
+| 16‑24 | buffer: cleanup, README, optional hardware run |
+
+---
+
+## 5 PassManager Wiring
+```python
+pm = PassManager()
+pm.append(GreedyCommunityLayout(backend), stage='layout')
+pm.append(refine_layout(backend),        stage='layout')  # optional
+pm.append(SabreSwap(backend.coupling_map, heuristic='lookahead'),
+          stage='routing')
+# optimisation & scheduling left to Qiskit defaults
+```
+
+---
+
+## 7 Talking Points
+  •  Problem – "Poor initial placement causes most SWAP overhead."
+  •  Method – "Community detection groups talkative qubits; Heavy-Hex
+    cells seat them adjacent; 1-s anneal polishes."
+  •  Safety – "Later phases stay stock Qiskit, so it runs on any
+    Heavy-Hex device."

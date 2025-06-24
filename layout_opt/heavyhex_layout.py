@@ -20,6 +20,7 @@ from qiskit.transpiler.coupling import CouplingMap
 from qiskit.providers import Backend
 from qiskit.dagcircuit import DAGCircuit
 from config_loader import get_config
+from .utils import build_interaction_graph
 
 
 class GreedyCommunityLayout(TransformationPass):
@@ -66,9 +67,7 @@ class GreedyCommunityLayout(TransformationPass):
     
     def _build_interaction_graph(self, dag: DAGCircuit) -> nx.Graph:
         """Build weighted interaction graph from circuit."""
-        # TODO: Create graph with logical qubits as nodes
-        # TODO: Add edges with weights = CX/ECR gate counts
-        pass
+        return build_interaction_graph(dag)
     
     def _detect_communities(self, graph: nx.Graph) -> List[List[int]]:
         """Detect communities using greedy modularity optimization."""
