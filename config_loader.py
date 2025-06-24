@@ -69,30 +69,20 @@ class ConfigLoader:
                            f"Valid options: {valid_suites}")
     
     def get_circuit_sizes(self) -> List[int]:
-        """Get flattened list of all circuit sizes to run."""
-        sizes = []
-        benchmarks = self.config['benchmarks']
-        
-        for size_category in benchmarks['run_sizes']:
-            if size_category in benchmarks['circuit_sizes']:
-                sizes.extend(benchmarks['circuit_sizes'][size_category])
-        
-        return sorted(list(set(sizes)))  # Remove duplicates and sort
+        """Get list of circuit sizes to run."""
+        return self.config['benchmarks']['circuit_sizes']
     
     def get_active_benchmarks(self) -> List[str]:
         """Get list of enabled benchmark suite names."""
-        return [name for name, enabled in self.config['benchmarks']['suites'].items() if enabled]
+        return [self.config['benchmarks']['active_suite']]
     
     def is_demo_mode(self) -> bool:
         """Check if running in demo mode."""
-        return self.config['hackathon']['demo_mode']
+        return False  # Simplified config doesn't have demo mode
     
     def get_demo_sizes(self) -> List[int]:
         """Get circuit sizes for demo mode."""
-        if self.is_demo_mode():
-            return self.config['hackathon']['demo_circuit_sizes']
-        else:
-            return self.get_circuit_sizes()
+        return self.get_circuit_sizes()
     
     def get_output_directory(self) -> Path:
         """Get output directory path."""
@@ -108,6 +98,10 @@ class ConfigLoader:
     def get_backend_name(self) -> str:
         """Get the backend name."""
         return self.config['backend']['name']
+    
+    def get_active_suite(self) -> str:
+        """Get the active benchmark suite."""
+        return self.config['benchmarks']['active_suite']
     
     def get_optimization_level(self) -> int:
         """Get the baseline optimization level."""
@@ -142,7 +136,7 @@ class ConfigLoader:
         backend = self.config['backend']
         print(f"\nBackend: {backend['name']} ({backend['num_qubits']} qubits)")
         
-        print(f"\nBenchmarks: {', '.join(self.get_active_benchmarks())}")
+        print(f"\nBenchmark suite: {self.config['benchmarks']['active_suite']}")
         print(f"Circuit sizes: {self.get_circuit_sizes()}")
         
         layout = self.config['layout_optimization']
@@ -151,9 +145,6 @@ class ConfigLoader:
         targets = self.config['targets']
         print(f"\nTargets:")
         print(f"  CX reduction: ≥{targets['cx_reduction_target_percent']}%")
-        
-        if self.is_demo_mode():
-            print(f"\n🎯 DEMO MODE: Using {self.get_demo_sizes()} qubit circuits")
     
     def save_runtime_config(self, filename: Optional[str] = None) -> Path:
         """
