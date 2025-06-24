@@ -31,7 +31,7 @@ benchmarks:
   active_suite: "quantum_volume"          # Options: quantum_volume, application_circuits, qasm_circuits
   
   # Circuit sizes to test (simple list)
-  circuit_sizes: [15, 25, 60]             # Qubit counts to benchmark
+  circuit_sizes: [50, 25, 60]             # Qubit counts to benchmark
     
   # Quantum Volume settings
   quantum_volume:
@@ -48,7 +48,31 @@ benchmarks:
 # LAYOUT OPTIMIZATION
 # =============================================================================
 layout_optimization:
-  algorithm: "simple"                     # Algorithm to use: simple, community, stock
+  algorithm: "community"                  # Algorithm to use: simple, community, stock
+  
+  # Community detection settings (when using community algorithm)
+  clustering:
+    # Algorithms to compare (list of algorithms to run)
+    algorithms: ["greedy_modularity", "louvain", "spectral", "kmeans", "heavy_hex"]
+    
+    # Common parameters
+    target_cluster_size: 7                # Preferred cluster size (7 for Heavy-Hex cells, 4 for kites)
+    
+    # Algorithm-specific parameters
+    greedy_modularity:
+      resolution: 1.0                     # Modularity resolution parameter
+    
+    louvain:
+      resolution: 1.0                     # Modularity resolution parameter
+      
+    spectral:
+      n_clusters: null                    # Number of clusters (null = auto-detect)
+      
+    kmeans:
+      n_clusters: null                    # Number of clusters (null = auto-detect)
+      
+    heavy_hex:
+      prefer_hex: true                    # Prefer 7-qubit hex over 4-qubit kites
   
   # Annealing settings (when enabled)
   annealing:

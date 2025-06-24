@@ -67,6 +67,15 @@ class ConfigLoader:
         if self.config['benchmarks']['active_suite'] not in valid_suites:
             raise ValueError(f"Invalid active_suite: {self.config['benchmarks']['active_suite']}. "
                            f"Valid options: {valid_suites}")
+        
+        # Validate clustering algorithms if using community layout
+        if self.config['layout_optimization']['algorithm'] == 'community':
+            valid_clustering = ['greedy_modularity', 'louvain', 'spectral', 'kmeans', 'heavy_hex']
+            clustering_algos = self.config['layout_optimization']['clustering']['algorithms']
+            for algo in clustering_algos:
+                if algo not in valid_clustering:
+                    raise ValueError(f"Invalid clustering algorithm: {algo}. "
+                                   f"Valid options: {valid_clustering}")
     
     def get_circuit_sizes(self) -> List[int]:
         """Get list of circuit sizes to run."""
@@ -123,6 +132,26 @@ class ConfigLoader:
         """Get VQE repetitions parameter."""
         return self.config['benchmarks']['application_circuits']['vqe']['ansatz_reps']
     
+    def get_clustering_algorithms(self) -> List[str]:
+        """Get the list of clustering algorithms to compare."""
+        return self.config['layout_optimization']['clustering']['algorithms']
+    
+    def get_clustering_target_size(self) -> int:
+        """Get the target cluster size."""
+        return self.config['layout_optimization']['clustering']['target_cluster_size']
+    
+    def get_clustering_resolution(self, algorithm: str = 'greedy_modularity') -> float:
+        """Get the modularity resolution parameter for a specific algorithm."""
+        return self.config['layout_optimization']['clustering'][algorithm].get('resolution', 1.0)
+    
+    def get_clustering_prefer_hex(self) -> bool:
+        """Get whether to prefer hex clusters over kites."""
+        return self.config['layout_optimization']['clustering']['heavy_hex'].get('prefer_hex', True)
+    
+    def get_layout_algorithm(self) -> str:
+        """Get the layout algorithm name."""
+        return self.config['layout_optimization']['algorithm']
+    
     def print_config_summary(self) -> None:
         """Print a summary of the loaded configuration."""
         print("🔧 Configuration Summary")
@@ -141,6 +170,11 @@ class ConfigLoader:
         
         layout = self.config['layout_optimization']
         print(f"\nLayout algorithm: {layout['algorithm']}")
+        if layout['algorithm'] == 'community':
+            clustering = layout['clustering']
+            print(f"Clustering algorithms: {clustering['algorithms']}")
+            print(f"Target cluster size: {clustering['target_cluster_size']}")
+            print(f"Available algorithm configs: {list(clustering.keys())}")
         
         targets = self.config['targets']
         print(f"\nTargets:")

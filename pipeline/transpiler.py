@@ -130,8 +130,24 @@ class TranspilerComparison:
             
             # Extract the layout from our custom pass
             if hasattr(temp_circuit, '_layout') and temp_circuit._layout:
-                # Get physical qubit mapping from our custom layout
-                initial_layout = temp_circuit._layout.get_physical_bits()
+                # Get virtual-to-physical qubit mapping from our custom layout
+                layout_wrapper = temp_circuit._layout
+                
+                # Handle different layout object types
+                if hasattr(layout_wrapper, 'initial_layout'):
+                    # TranspileLayout object - extract the actual Layout
+                    actual_layout = layout_wrapper.initial_layout
+                    if hasattr(actual_layout, 'get_virtual_bits'):
+                        initial_layout = actual_layout.get_virtual_bits()
+                    else:
+                        # Convert Layout to dict format
+                        initial_layout = {v: k for k, v in actual_layout._p2v.items()}
+                elif hasattr(layout_wrapper, 'get_virtual_bits'):
+                    # Direct Layout object
+                    initial_layout = layout_wrapper.get_virtual_bits()
+                else:
+                    # Fallback - try to convert directly
+                    initial_layout = dict(layout_wrapper)
                 
                 # Use standard Qiskit transpile with our custom initial layout
                 # This ensures all other stages (routing, optimization, scheduling) are handled properly
