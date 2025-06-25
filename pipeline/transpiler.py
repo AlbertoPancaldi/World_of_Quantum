@@ -105,13 +105,45 @@ class TranspilerComparison:
     
     def _get_input_stats(self, circuit: QuantumCircuit) -> Dict[str, int]:
         """Get basic statistics about the input circuit."""
+        # Check if circuit contains high-level gates that need decomposition
         gate_counts = circuit.count_ops()
+        has_high_level_gates = any('quantum_volume' in gate_name or 
+                                 gate_name in ['qft', 'iqft', 'qaoa', 'vqe'] 
+                                 for gate_name in gate_counts.keys())
+        
+        if has_high_level_gates:
+            # Decompose multiple levels to get actual gate counts
+            decomposed_circuit = circuit.decompose()
+            
+            # Keep decomposing until we reach basic gates or no change occurs
+            for level in range(1, 5):  # Max 5 levels to avoid infinite loops
+                prev_gates = set(decomposed_circuit.count_ops().keys())
+                next_decomp = decomposed_circuit.decompose()
+                next_gates = set(next_decomp.count_ops().keys())
+                
+                # Stop if no new gate types appear (fully decomposed)
+                if prev_gates == next_gates:
+                    break
+                    
+                decomposed_circuit = next_decomp
+                
+                # Stop if we have basic 2-qubit gates
+                if any(gate in next_gates for gate in ['cx', 'cz', 'ecr']):
+                    break
+            
+            gate_counts = decomposed_circuit.count_ops()
+            circuit_depth = decomposed_circuit.depth()
+            print(f"📊 Decomposed input circuit ({level} levels): {len(gate_counts)} gate types, depth {circuit_depth}")
+            print(f"    Gate breakdown: {dict(gate_counts)}")
+        else:
+            circuit_depth = circuit.depth()
+        
         two_qubit_gates = {'cx', 'cz', 'ecr', 'rzz', 'rxx', 'ryy', 'rzx', 'iswap', 'swap'}
         cx_count = sum(gate_counts.get(gate, 0) for gate in two_qubit_gates)
         
         return {
             'num_qubits': circuit.num_qubits,
-            'depth': circuit.depth(),
+            'depth': circuit_depth,
             'cx_count': cx_count,
             'total_gates': sum(gate_counts.values())
         }

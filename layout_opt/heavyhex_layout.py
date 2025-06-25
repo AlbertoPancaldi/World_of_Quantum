@@ -23,6 +23,7 @@ from config_loader import get_config
 from .utils import CircuitAnalyzer
 from .clustering import compare_clustering_algorithms
 from .distance import HeavyHexTopologyAnalyzer
+from .anneal import refine_layout
 
 
 class GreedyCommunityLayout(TransformationPass):
@@ -122,6 +123,67 @@ class GreedyCommunityLayout(TransformationPass):
             dag.num_qubits()
         )
         
+        # Step 5.5: Apply simulated annealing refinement with detailed metrics
+        config = get_config()
+        annealing_config = config.config.get('layout_optimization', {}).get('annealing', {})
+        annealing_enabled = annealing_config.get('enabled', False)
+        
+        if annealing_enabled:
+            print("🔥 Applying simulated annealing refinement...")
+            try:
+                distance_matrix = self.analysis_results.get('distance_matrix')
+                if distance_matrix is not None:
+                    # Compute initial layout cost for comparison
+                    initial_cost = self._compute_layout_cost(layout_dict, interaction_graph, distance_matrix)
+                    initial_layout_stats = self._analyze_layout_quality(layout_dict, interaction_graph, distance_matrix)
+                    
+                    print(f"📊 Initial greedy layout metrics:")
+                    print(f"   Total cost: {initial_cost:.2f}")
+                    print(f"   Avg distance: {initial_layout_stats['avg_distance']:.2f}")
+                    print(f"   Max distance: {initial_layout_stats['max_distance']:.0f}")
+                    print(f"   Distance penalty: {initial_layout_stats['distance_penalty']:.2f}")
+                    print(f"   Error penalty: {initial_layout_stats['error_penalty']:.2f}")
+                    
+                    # Apply annealing refinement
+                    refined_layout = refine_layout(
+                        backend=self.backend,
+                        initial_layout=layout_dict,
+                        interaction_graph=interaction_graph,
+                        distance_matrix=distance_matrix,
+                        communities=communities,
+                        max_time=annealing_config.get('max_time', 1.0),
+                        seed=self.seed
+                    )
+                    
+                    # Compute refined layout cost for comparison
+                    refined_cost = self._compute_layout_cost(refined_layout, interaction_graph, distance_matrix)
+                    refined_layout_stats = self._analyze_layout_quality(refined_layout, interaction_graph, distance_matrix)
+                    
+                    # Show improvement metrics
+                    cost_improvement = ((initial_cost - refined_cost) / initial_cost * 100) if initial_cost > 0 else 0
+                    distance_improvement = ((initial_layout_stats['avg_distance'] - refined_layout_stats['avg_distance']) / initial_layout_stats['avg_distance'] * 100) if initial_layout_stats['avg_distance'] > 0 else 0
+                    
+                    print(f"\n📈 Annealing refinement results:")
+                    print(f"   Final cost: {refined_cost:.2f} (was {initial_cost:.2f})")
+                    print(f"   Cost improvement: {cost_improvement:+.1f}%")
+                    print(f"   Avg distance: {refined_layout_stats['avg_distance']:.2f} (was {initial_layout_stats['avg_distance']:.2f})")
+                    print(f"   Distance improvement: {distance_improvement:+.1f}%")
+                    print(f"   Physical qubits used: {sorted(set(refined_layout.values()))}")
+                    
+                    # Only use refined layout if it's actually better
+                    if refined_cost <= initial_cost:
+                        layout_dict = refined_layout
+                        print(f"✅ Using refined layout (improved by {cost_improvement:.1f}%)")
+                    else:
+                        print(f"⚠️  Refined layout worse than initial, keeping greedy layout")
+                        
+                else:
+                    print("⚠️  No distance matrix available, skipping annealing")
+            except Exception as e:
+                print(f"⚠️  Annealing failed: {e}, using greedy layout")
+        else:
+            print("ℹ️  Annealing disabled in config, using greedy layout only")
+        
         # Step 6: Set layout property (convert to Qubit objects)
         layout_dict_qubits = {}
         for logical_idx, physical_idx in layout_dict.items():
@@ -162,13 +224,14 @@ class GreedyCommunityLayout(TransformationPass):
             # GET ORIGINAL SCORE
             score = result.get('quantum_score', 0)
             
-            # ADD: HEAVY PENALTY FOR OVERSIZED COMMUNITIES  
+            # ADD: MODERATE PENALTY FOR OVERSIZED COMMUNITIES  
             communities = result['communities']
             oversized_penalty = 0
             for community in communities:
                 if len(community) > 7:  # Max hex cluster size
-                    # Massive penalty for communities that can't fit in hex clusters
-                    oversized_penalty += (len(community) - 7) * 10.0  # 10x penalty per extra qubit
+                    # Moderate penalty for communities that can't fit in hex clusters
+                    # Reduced from 10.0 to 1.0 to allow better clustering options
+                    oversized_penalty += (len(community) - 7) * 1.0  # 1x penalty per extra qubit
             
             adjusted_score = score - oversized_penalty
             
@@ -576,6 +639,66 @@ class GreedyCommunityLayout(TransformationPass):
                 best_physical = physical
         
         return best_physical
+    
+    def _compute_layout_cost(self, layout: Dict[int, int], 
+                           interaction_graph: nx.Graph, 
+                           distance_matrix: np.ndarray) -> float:
+        """
+        Compute total cost of a layout for comparison.
+        Cost = Σ(weight × distance) + λ·Σ(gate_error)
+        """
+        total_cost = 0.0
+        noise_penalty_weight = 0.1  # Same as annealing
+        
+        for u, v, data in interaction_graph.edges(data=True):
+            if u in layout and v in layout:
+                phys_u = layout[u]
+                phys_v = layout[v]
+                weight = data['weight']
+                
+                # Distance cost
+                distance = distance_matrix[phys_u][phys_v]
+                distance_cost = weight * distance
+                
+                # Noise penalty (gate error)
+                error_rate = self._get_cx_error_rate(phys_u, phys_v)
+                noise_penalty = weight * noise_penalty_weight * error_rate
+                
+                total_cost += distance_cost + noise_penalty
+        
+        return total_cost
+    
+    def _analyze_layout_quality(self, layout: Dict[int, int], 
+                              interaction_graph: nx.Graph, 
+                              distance_matrix: np.ndarray) -> Dict[str, float]:
+        """Analyze layout quality metrics for detailed comparison."""
+        distances = []
+        distance_penalty = 0.0
+        error_penalty = 0.0
+        noise_penalty_weight = 0.1
+        
+        for u, v, data in interaction_graph.edges(data=True):
+            if u in layout and v in layout:
+                phys_u = layout[u]
+                phys_v = layout[v]
+                weight = data['weight']
+                
+                distance = distance_matrix[phys_u][phys_v]
+                distances.append(distance)
+                distance_penalty += weight * distance
+                
+                error_rate = self._get_cx_error_rate(phys_u, phys_v)
+                error_penalty += weight * noise_penalty_weight * error_rate
+        
+        return {
+            'avg_distance': np.mean(distances) if distances else 0.0,
+            'max_distance': np.max(distances) if distances else 0.0,
+            'min_distance': np.min(distances) if distances else 0.0,
+            'distance_penalty': distance_penalty,
+            'error_penalty': error_penalty,
+            'total_interactions': len(distances)
+        }
+
 
 if __name__ == "__main__":
     print("GreedyCommunityLayout implementation complete!") 

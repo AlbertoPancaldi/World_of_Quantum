@@ -31,7 +31,7 @@ benchmarks:
   active_suite: "quantum_volume"          # Options: quantum_volume, application_circuits, qasm_circuits
   
   # Circuit sizes to test (simple list)
-  circuit_sizes: [14, 25, 60]             # Qubit counts to benchmark
+  circuit_sizes: [21, 25, 60]             # Qubit counts to benchmark
     
   # Quantum Volume settings
   quantum_volume:
@@ -74,13 +74,25 @@ layout_optimization:
     heavy_hex:
       prefer_hex: true                    # Prefer 7-qubit hex over 4-qubit kites
   
-  # Annealing settings (when enabled)
+  # Simulated annealing refinement settings (1-second post-processing)
   annealing:
-    enabled: false
-    max_time_seconds: 1.0
-    initial_temperature: 3.0
-    cooling_rate: 0.95
-    max_steps: 800
+    enabled: true                         # DISABLE annealing to test greedy only
+    max_time: 3.0                        # Maximum annealing time in seconds
+    initial_temperature: 3.0             # Starting temperature (T₀)
+    cooling_rate: 0.95                   # Temperature decay factor (α)
+    max_steps: 800                       # Maximum annealing steps
+    noise_penalty_weight: 0.1            # Weight for gate error penalty (λ)
+    
+    # Move probabilities
+    move_probabilities:
+      random_swap: 0.7                   # Probability of random swap moves
+      community_shift: 0.3               # Probability of community shift moves
+    
+    # Progress reporting
+    progress_steps: 200                  # Report progress every N steps
+    
+    # Acceptance criteria
+    min_temperature: 0.01                # Stop when temperature drops below this
 
 # =============================================================================
 # TRANSPILATION SETTINGS
