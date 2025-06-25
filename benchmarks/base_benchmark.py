@@ -8,6 +8,9 @@ Provides common functionality for circuit generation and management.
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 from qiskit import QuantumCircuit
+
+from qiskit.circuit.random import random_circuit
+
 from config_loader import get_config
 
 
@@ -41,7 +44,21 @@ class BaseBenchmark(ABC):
         Returns:
             Dictionary mapping circuit names to QuantumCircuit objects
         """
-        pass
+        # 1. Resolve which sizes we need
+        if qubit_range is None:
+            qubit_range = get_config().get_benchmark_circuit_sizes()
+
+        circuits: Dict[str, QuantumCircuit] = {}
+
+        # 2. Loop through sizes and build circuits
+        for n in qubit_range:
+            depth = max(1, n)                     # ensure depth ≥1
+            qc = random_circuit(num_qubits=n,
+                                depth=depth,
+                                seed=self.seed + n)
+            qc.name = f"Rand_{n}q_d{depth}"
+            circuits[qc.name] = qc
+        return circuits
     
     @abstractmethod
     def get_name(self) -> str:
@@ -51,7 +68,7 @@ class BaseBenchmark(ABC):
         Returns:
             Human-readable benchmark suite name
         """
-        pass
+        return self.__class__.__name__
     
     @abstractmethod
     def get_description(self) -> str:
@@ -61,7 +78,8 @@ class BaseBenchmark(ABC):
         Returns:
             Detailed description of the benchmark suite
         """
-        pass
+        # Default: use the subclass docstring if present, else class name.
+        return (self.__class__.__doc__ or "").strip() or f"{self.__class__.__name__} benchmark suite."
     
     def get_circuit_info(self, circuit_name: str) -> Dict[str, Any]:
         """
