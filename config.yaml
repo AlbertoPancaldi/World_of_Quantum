@@ -98,7 +98,7 @@ layout_optimization:
 # TRANSPILATION SETTINGS
 # =============================================================================
 transpilation:
-  baseline_optimization_level: 1        # Qiskit optimization level for comparison
+  baseline_optimization_level: 3       # Qiskit optimization level for comparison
 
 # =============================================================================
 # PERFORMANCE TARGETS

@@ -101,7 +101,6 @@ class GreedyCommunityLayout(TransformationPass):
             interaction_graph,
             algorithms=self.clustering_algorithms,
             target_cluster_size=self.target_cluster_size,
-            resolution=1.0
         )
         
         # Step 3: Select best clustering result
