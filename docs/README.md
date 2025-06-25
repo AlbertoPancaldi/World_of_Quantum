@@ -2,11 +2,11 @@
 
 ## 🎯 Project Overview
 
-A high-performance quantum layout optimization framework designed specifically for IBM Heavy-Hex quantum backends. This project implements advanced layout optimization algorithms that significantly outperform stock Qiskit transpilation on 15-100 qubit circuits.
+A high-performance quantum layout optimization framework designed specifically for IBM Heavy-Hex quantum backends. This project implements advanced layout optimization algorithms that aims at outperforming stock Qiskit transpilation on 15-100 qubit circuits.
 
 ### Key Achievements
 - **≥25% CX gate reduction** compared to Qiskit optimization level 3
-- **Heavy-Hex topology awareness** exploiting 7-qubit hex clusters and 4-qubit kites  
+- **Heavy-Hex topology awareness** exploiting 7-qubit hex clusters
 - **Scalable performance** from 15 to 100+ qubit circuits
 - **Modular architecture** supporting multiple benchmark suites and algorithms
 
@@ -41,7 +41,7 @@ cd World_of_Quantum
 
 # Setup environment
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+source venv/bin/activate  # Powershall: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -73,7 +73,7 @@ collector.print_summary_report()
 
 ### Demo Notebook
 ```bash
-jupyter notebook notebooks/00_demo.ipynb
+jupyter notebook notebooks/Delivery.ipynb
 ```
 
 ## 📊 Benchmark Suites
@@ -188,4 +188,4 @@ World_of_Quantum/
 
 ---
 
-*This project was developed for the Quantum Computing Hackathon 2024*
+*This project was developed for the Quantum Computing Hackathon 2025*
